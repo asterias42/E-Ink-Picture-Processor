@@ -1,0 +1,982 @@
+<!doctype html>
+<html lang="de">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <title>E-Ink Spectra6 Preprocessor</title>
+    <style>
+        :root {
+            --font-size: 16px;
+            --btn-pad-y: 8px;
+            --btn-pad-x: 12px;
+            --control-gap: 8px;
+            --list-height: 150px;
+        }
+
+        html,
+        body {
+            height: 100%;
+            overscroll-behavior: none;
+            /* reduziert Pull-to-Refresh/OverScroll */
+        }
+
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial;
+            margin: 16px;
+            font-size: var(--font-size);
+        }
+
+        header {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        #container {
+            display: flex;
+            gap: 24px;
+            margin-top: 12px;
+            align-items: flex-start;
+        }
+
+        #left {
+            flex: 1;
+            min-width: 320px;
+        }
+
+        /* Desktop: Höhe begrenzen (Anzeige), intern wird extra skaliert */
+        canvas {
+            max-width: 100%;
+            max-height: 90vh;
+            border: 1px solid #ddd;
+            display: block;
+            touch-action: none;
+            /* Haupt-Canvas: Gesten steuern Rahmen */
+            -webkit-user-select: none;
+            user-select: none;
+            background: #f5f5f5;
+        }
+
+        /* Vorschau-Canvas: Scrollen erlauben (Mobile) */
+        #preview {
+            touch-action: auto;
+        }
+
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: var(--control-gap);
+            max-width: 420px;
+        }
+
+        label {
+            font-size: 0.9em;
+        }
+
+        input[type=text],
+        input[type=number],
+        select {
+            width: 100%;
+            padding: 6px;
+            font-size: 1em;
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: var(--btn-pad-y) var(--btn-pad-x);
+            font-size: 1em;
+        }
+
+        .overlay-hint {
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        #fileList {
+            list-style: none;
+            padding: 0;
+            margin-top: 8px;
+            max-height: var(--list-height);
+            overflow-y: auto;
+            border: 1px solid #ccc;
+        }
+
+        #fileList li {
+            padding: 6px 8px;
+            cursor: pointer;
+        }
+
+        #fileList li.selected {
+            background-color: #00ff66;
+            color: black;
+        }
+
+        /* Bild-Datei-Browse: Nur den Button zeigen, Dateiname ausblenden */
+        #fileInput {
+            color: transparent;
+        }
+
+        #fileInput::file-selector-button {
+            color: initial;
+        }
+
+        #fileInput::-webkit-file-upload-button {
+            color: initial;
+        }
+
+        /* Mobile */
+        @media (max-width: 900px),
+        (pointer: coarse) {
+            :root {
+                --font-size: 18px;
+                --btn-pad-y: 12px;
+                --btn-pad-x: 16px;
+                --control-gap: 10px;
+                --list-height: 200px;
+            }
+
+            #container {
+                flex-direction: column;
+                gap: 16px;
+            }
+
+            .controls {
+                max-width: 100%;
+            }
+
+            header h1 {
+                font-size: 1.3em;
+            }
+
+            .overlay-hint {
+                font-size: 0.95em;
+            }
+
+            #fileList li {
+                padding: 10px 12px;
+            }
+
+            button {
+                min-height: 44px;
+            }
+
+            /* Mobile: volle Breite */
+            canvas {
+                width: 100%;
+                height: auto;
+                max-height: none;
+            }
+
+            /* Vorschau bleibt scroll-freundlich */
+            #preview {
+                touch-action: auto;
+            }
+
+            body {
+                margin: 12px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>E-Ink Spectra6 — Browser Preprocessor</h1>
+    </header>
+
+    <div id="container">
+        <div id="left">
+            <input id="fileInput" type="file" accept="image/*" multiple>
+            <ul id="fileList"></ul>
+            <div class="row" style="margin-top:4px;">
+                <button id="removeFileBtn">Entfernen</button>
+                <button id="clearFilesBtn">Alle entfernen</button>
+            </div>
+
+            <div style="position:relative;margin-top:12px">
+                <canvas id="canvas" width="900" height="600"></canvas>
+            </div>
+
+            <div class="overlay-hint">
+                Rahmen: Ecken = Skalieren (Seitenverhältnis aus Zielbreite/-höhe).
+                Mobile: Rahmen innerhalb der Fläche antippen und verschieben.
+            </div>
+        </div>
+
+        <div class="controls">
+            <!-- Process & Download oben -->
+            <div class="row">
+                <button id="processBtn">Process</button>
+                <button id="downloadBtn" disabled>Download BMP</button>
+            </div>
+
+            <!-- Vorschau direkt darunter -->
+            <div>
+                <label>Vorschau:</label>
+                <canvas id="preview" width="240" height="400" style="border:1px solid #ccc;display:block"></canvas>
+            </div>
+
+            <!-- Zielbreite/-höhe -->
+            <div>
+                <label>Zielbreite (px)</label>
+                <input id="outW" type="number" value="480" min="1">
+                <label>Zielhöhe (px)</label>
+                <input id="outH" type="number" value="800" min="1">
+            </div>
+
+            <!-- Palette -->
+            <div>
+                <label>Palette</label>
+                <select id="paletteSelect">
+                    <option value="2">2 Farben (Schwarz, Weiß)</option>
+                    <option value="3">3 Farben (Schwarz, Weiß, Rot)</option>
+                    <option value="4">4 Farben (Schwarz, Weiß, Rot, Gelb)</option>
+                    <option value="6" selected>6 Farben (Schwarz, Weiß, Rot, Grün, Blau, Gelb)</option>
+                    <option value="custom">Custom (GPL/CSV laden)</option>
+                </select>
+                <input id="paletteFile" type="file" accept=".gpl, .txt, .csv" disabled>
+                <details>
+                    <summary id="paletteSummary">Aktuelle Palette (6 Farben)</summary>
+                    <ul id="paletteList"></ul>
+                </details>
+            </div>
+
+            <!-- Hinweis -->
+            <div style="font-size:0.95em;color:#666;margin-top:8px">Alle Schritte lokal im Browser. Kein Upload.</div>
+        </div>
+    </div>
+
+    <script>
+        /* ---------- Utilities ---------- */
+        function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+        function deriveOutputName(inputName) {
+            if (!inputName || typeof inputName !== 'string') return 'output_dithered.bmp';
+            const dot = inputName.lastIndexOf('.');
+            const base = dot > 0 ? inputName.slice(0, dot) : inputName;
+            return base + '_dithered.bmp';
+        }
+        function getCanvasPoint(ev, cnv) {
+            const rect = cnv.getBoundingClientRect();
+            const scaleX = cnv.width / rect.width;
+            const scaleY = cnv.height / rect.height;
+            return { x: (ev.clientX - rect.left) * scaleX, y: (ev.clientY - rect.top) * scaleY };
+        }
+        function getCanvasPixelPerCssPx(cnv) {
+            const rect = cnv.getBoundingClientRect();
+            return { sx: cnv.width / rect.width, sy: cnv.height / rect.height };
+        }
+        const isMobile = matchMedia('(pointer: coarse)').matches || window.innerWidth <= 900;
+
+        /* ---------- Palette parsing (GPL/CSV) ---------- */
+        async function parseGPL(text) {
+            const lines = text.split(/\r?\n/)
+                .map(l => l.trim())
+                .filter(l => l && !l.startsWith('#') && !l.startsWith('GIMP') && !l.startsWith('Name:') && !l.startsWith('Columns:'));
+            const cols = [];
+            for (const l of lines) {
+                const parts = l.split(/\s+/);
+                if (parts.length >= 3) {
+                    const r = parseInt(parts[0]), g = parseInt(parts[1]), b = parseInt(parts[2]);
+                    if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) cols.push([r, g, b]);
+                }
+            }
+            return cols;
+        }
+        async function parsePaletteFile(file) {
+            if (!file) return null;
+            const text = await file.text();
+            const gpl = await parseGPL(text);
+            if (gpl.length > 0) return gpl;
+            const csvLines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+            const cols = [];
+            for (const l of csvLines) {
+                const p = l.split(/[;, \t]+/).map(x => parseInt(x));
+                if (p.length >= 3 && p.slice(0, 3).every(n => Number.isFinite(n))) cols.push(p.slice(0, 3));
+            }
+            return cols.length ? cols : null;
+        }
+
+        /* ---------- Canvas + interaction state ---------- */
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        let img = new Image();
+        let imgLoaded = false;
+        let imgNaturalW = 0, imgNaturalH = 0;
+
+        /* Visuelle Größen (CSS-Pixel) */
+        const HANDLE_RADIUS_CSS = isMobile ? 22 : 10;
+        const LINE_WIDTH_CSS = isMobile ? 4 : 3;
+        const MOVE_RADIUS_CSS = Math.max(14, HANDLE_RADIUS_CSS - 2);
+        const SHOW_MOVE_HANDLE = isMobile;
+
+        /* Crop-Rect in Canvas-Koordinaten (nach internem Scale) */
+        let crop = { x: 50, y: 50, w: 500, h: 300 };
+
+        /* Interaction */
+        let dragging = false, dragMode = null, dragStart = { x: 0, y: 0 }, origCrop = null;
+
+        /* Dateien (nur Zeiger/Handles), kein Preload */
+        let fileEntries = [];
+        let selectedIndex = -1;
+        const fileListElem = document.getElementById('fileList');
+        const clearFilesBtn = document.getElementById('clearFilesBtn');
+        const removeFileBtn = document.getElementById('removeFileBtn');
+        const fileInput = document.getElementById('fileInput');
+        let currentBlobUrl = null;
+        fileInput.title = '';
+
+        /* Palette */
+        const PALETTES = {
+            '2': [[0, 0, 0], [255, 255, 255]],
+            '3': [[0, 0, 0], [255, 255, 255], [255, 0, 0]],
+            '4': [[0, 0, 0], [255, 255, 255], [255, 0, 0], [255, 255, 0]],
+            '6': [[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]]
+        };
+        let palette = PALETTES['6'].map(c => c.slice());
+
+        function refreshPaletteList() {
+            const ul = document.getElementById('paletteList');
+            const summary = document.getElementById('paletteSummary');
+            ul.innerHTML = '';
+            palette.forEach((c, i) => {
+                const li = document.createElement('li');
+                li.textContent = `${i + 1}: ${c[0]}, ${c[1]}, ${c[2]}`;
+                ul.appendChild(li);
+            });
+            summary.textContent = `Aktuelle Palette (${palette.length} Farben)`;
+        }
+        refreshPaletteList();
+
+        const paletteSelect = document.getElementById('paletteSelect');
+        const paletteFileInput = document.getElementById('paletteFile');
+
+        paletteSelect.addEventListener('change', () => {
+            const val = paletteSelect.value;
+            if (val === 'custom') {
+                paletteFileInput.disabled = false;
+            } else {
+                paletteFileInput.disabled = true;
+                paletteFileInput.value = '';
+                if (PALETTES[val]) {
+                    palette = PALETTES[val].map(c => c.slice());
+                    refreshPaletteList();
+                }
+            }
+        });
+
+        paletteFileInput.addEventListener('change', async (ev) => {
+            if (paletteSelect.value !== 'custom') return;
+            const f = ev.target.files[0]; if (!f) return;
+            const p = await parsePaletteFile(f);
+            if (p && p.length > 0) { palette = p.slice(0, 16); refreshPaletteList(); }
+            else alert('Palette konnte nicht geparst werden (verwende GPL oder CSV)');
+        });
+
+        /* ---------- Datei-Handling ---------- */
+        function clearPreviewAndDownload() {
+            const preview = document.getElementById('preview');
+            const pctx = preview.getContext('2d');
+            pctx.clearRect(0, 0, preview.width, preview.height);
+            lastBMPBlob = null;
+            lastOutputName = null;
+            document.getElementById('downloadBtn').disabled = true;
+        }
+
+        function renderFileList() {
+            fileListElem.innerHTML = '';
+            fileEntries.forEach((f, i) => {
+                const li = document.createElement('li');
+                li.textContent = f.name;
+                if (i === selectedIndex) li.classList.add('selected');
+                li.addEventListener('click', () => selectFile(i));
+                fileListElem.appendChild(li);
+            });
+        }
+
+        /* Ermittlung einer konservativen Canvas-Skalierung zur RAM-Schonung */
+        function computeInternalScale(nw, nh) {
+            const deviceMemGB = (navigator.deviceMemory || 4);
+            const maxPixels = isMobile ? 4_000_000 : Math.min(16_000_000, 8_000_000 * deviceMemGB);
+            const maxDim = isMobile ? 2048 : 4096;
+            const s1 = Math.min(1, Math.sqrt(maxPixels / (nw * nh)));
+            const s2 = Math.min(1, maxDim / Math.max(nw, nh));
+            return Math.min(s1, s2);
+        }
+
+        function selectFile(idx) {
+            if (idx < 0 || idx >= fileEntries.length) return;
+            selectedIndex = idx;
+            const f = fileEntries[idx];
+
+            imgLoaded = false;
+            clearPreviewAndDownload();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (currentBlobUrl) { try { URL.revokeObjectURL(currentBlobUrl); } catch (e) { } currentBlobUrl = null; }
+
+            img = new Image();
+            img.onload = () => {
+                imgLoaded = true;
+                imgNaturalW = img.naturalWidth; imgNaturalH = img.naturalHeight;
+
+                const s = computeInternalScale(imgNaturalW, imgNaturalH);
+                const cw = Math.max(1, Math.round(imgNaturalW * s));
+                const ch = Math.max(1, Math.round(imgNaturalH * s));
+                canvas.width = cw;
+                canvas.height = ch;
+                canvas._imgScale = s;
+
+                let outW = parseInt(document.getElementById('outW').value) || 480;
+                let outH = parseInt(document.getElementById('outH').value) || 800;
+                adjustCropToAspect(outW, outH, 'fit');
+
+                drawMain();
+            };
+            currentBlobUrl = URL.createObjectURL(f);
+            img.src = currentBlobUrl;
+
+            renderFileList();
+        }
+
+        fileInput.addEventListener('change', ev => {
+            fileInput.title = '';
+            const files = Array.from(ev.target.files);
+            if (files.length === 0) return;
+            fileEntries = fileEntries.concat(files);
+            if (selectedIndex === -1) selectFile(0);
+            else renderFileList();
+        });
+
+        clearFilesBtn.addEventListener('click', () => {
+            fileEntries = [];
+            selectedIndex = -1;
+
+            if (currentBlobUrl) { try { URL.revokeObjectURL(currentBlobUrl); } catch (e) { } currentBlobUrl = null; }
+            if (img && img.src && img.src.startsWith('blob:')) { try { URL.revokeObjectURL(img.src); } catch (e) { } }
+            img.src = '';
+            imgLoaded = false;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            clearPreviewAndDownload();
+            renderFileList();
+            fileInput.value = '';
+        });
+
+        removeFileBtn.addEventListener('click', () => {
+            if (selectedIndex < 0 || selectedIndex >= fileEntries.length) return;
+            if (currentBlobUrl) { try { URL.revokeObjectURL(currentBlobUrl); } catch (e) { } currentBlobUrl = null; }
+            fileEntries.splice(selectedIndex, 1);
+
+            imgLoaded = false;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            clearPreviewAndDownload();
+
+            if (fileEntries.length > 0) {
+                const newIndex = Math.min(selectedIndex, fileEntries.length - 1);
+                selectFile(newIndex);
+            } else {
+                selectedIndex = -1;
+                renderFileList();
+                fileInput.value = '';
+            }
+        });
+
+        /* ---------- Drawing & interaction ---------- */
+        function drawMain() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!imgLoaded) {
+                ctx.fillStyle = '#f5f5f5'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#666'; ctx.font = '16px sans-serif'; ctx.fillText('Bitte Bild auswählen/hochladen', 20, 30);
+                return;
+            }
+            ctx.drawImage(img, 0, 0, imgNaturalW, imgNaturalH, 0, 0, canvas.width, canvas.height);
+
+            const scale = getCanvasPixelPerCssPx(canvas).sx;
+            ctx.save();
+            ctx.lineWidth = LINE_WIDTH_CSS * scale;
+            ctx.strokeStyle = '#00bb66';
+            ctx.strokeRect(crop.x + 0.5, crop.y + 0.5, crop.w, crop.h);
+            ctx.restore();
+
+            const rCanvas = HANDLE_RADIUS_CSS * scale;
+            const handles = getHandles(crop);
+            ctx.fillStyle = 'rgba(255,255,255,0.95)';
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1.5 * scale;
+            handles.forEach(h => {
+                ctx.beginPath();
+                ctx.arc(h.x, h.y, rCanvas, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+            });
+
+            if (isMobile) {
+                const cx = crop.x + crop.w / 2;
+                const cy = crop.y + crop.h / 2;
+                const mvR = MOVE_RADIUS_CSS * scale;
+                ctx.beginPath();
+                ctx.arc(cx, cy, mvR, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0,187,102,0.25)';
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+                ctx.stroke();
+            }
+        }
+        function getHandles(r) {
+            return [
+                { name: 'nw', x: r.x, y: r.y },
+                { name: 'ne', x: r.x + r.w, y: r.y },
+                { name: 'sw', x: r.x, y: r.y + r.h },
+                { name: 'se', x: r.x + r.w, y: r.y + r.h }
+            ];
+        }
+        function hitCorner(px, py) {
+            const scale = getCanvasPixelPerCssPx(canvas).sx;
+            const r2 = Math.pow(HANDLE_RADIUS_CSS * scale, 2);
+            const hs = getHandles(crop);
+            for (const h of hs) {
+                const dx = px - h.x, dy = py - h.y;
+                if (dx * dx + dy * dy <= r2) return h.name;
+            }
+            return null;
+        }
+        function pointHitMode(px, py) {
+            const corner = hitCorner(px, py);
+            if (corner) return corner;
+            if (isMobile) {
+                if (px >= crop.x && px <= crop.x + crop.w && py >= crop.y && py <= crop.y + crop.h) return 'move';
+                return null;
+            }
+            const BORDER_TOUCH = 8;
+            const left = crop.x, right = crop.x + crop.w, top = crop.y, bottom = crop.y + crop.h;
+            const nearLeft = Math.abs(px - left) <= BORDER_TOUCH;
+            const nearRight = Math.abs(px - right) <= BORDER_TOUCH;
+            const nearTop = Math.abs(py - top) <= BORDER_TOUCH;
+            const nearBottom = Math.abs(py - bottom) <= BORDER_TOUCH;
+            if ((nearLeft || nearRight || nearTop || nearBottom) &&
+                px >= left - BORDER_TOUCH && px <= right + BORDER_TOUCH &&
+                py >= top - BORDER_TOUCH && py <= bottom + BORDER_TOUCH) {
+                return 'move';
+            }
+            return null;
+        }
+
+        /* Seitenverhältnis-gestütztes Anpassen */
+        function adjustCropToAspect(targetW, targetH, mode = 'auto') {
+            if (!imgLoaded) return;
+            targetW = parseInt(targetW); targetH = parseInt(targetH);
+            if (!Number.isFinite(targetW) || !Number.isFinite(targetH) || targetW <= 0 || targetH <= 0) return;
+
+            const r = targetW / targetH;
+            const cx = crop.x + crop.w / 2;
+            const cy = crop.y + crop.h / 2;
+
+            let newW = crop.w, newH = crop.h;
+            if (mode === 'fit') {
+                const maxW = canvas.width * (isMobile ? 0.85 : 0.7);
+                const maxH = canvas.height * (isMobile ? 0.85 : 0.7);
+                newW = Math.min(maxW, maxH * r);
+                newH = Math.round(newW / r);
+            } else if (mode === 'keepH') {
+                newH = crop.h; newW = Math.round(newH * r);
+                if (newW > canvas.width) { newW = canvas.width; newH = Math.round(newW / r); }
+            } else if (mode === 'keepW') {
+                newW = crop.w; newH = Math.round(newW / r);
+                if (newH > canvas.height) { newH = canvas.height; newW = Math.round(newH * r); }
+            } else {
+                const currentR = crop.w / crop.h;
+                if (currentR > r) { newH = crop.h; newW = Math.round(newH * r); }
+                else { newW = crop.w; newH = Math.round(newW / r); }
+            }
+            newW = Math.max(10, Math.min(newW, canvas.width));
+            newH = Math.max(10, Math.min(newH, canvas.height));
+            let nx = Math.round(cx - newW / 2);
+            let ny = Math.round(cy - newH / 2);
+            nx = clamp(nx, 0, canvas.width - newW);
+            ny = clamp(ny, 0, canvas.height - newH);
+            crop.x = nx; crop.y = ny; crop.w = Math.round(newW); crop.h = Math.round(newH);
+        }
+
+        /* Pointer Events (Resize stabil via Projektion) */
+        canvas.addEventListener('pointerdown', ev => {
+            if (!imgLoaded) return;
+            ev.preventDefault();
+            const { x, y } = getCanvasPoint(ev, canvas);
+            const hit = pointHitMode(x, y);
+            if (hit) {
+                dragging = true;
+                dragMode = hit;
+                dragStart = { x, y };
+                origCrop = Object.assign({}, crop);
+                try { canvas.setPointerCapture(ev.pointerId); } catch (e) { }
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('pointermove', ev => {
+            if (!dragging) return;
+            ev.preventDefault();
+            const { x: px, y: py } = getCanvasPoint(ev, canvas);
+
+            let outW = parseInt(document.getElementById('outW').value) || 1;
+            let outH = parseInt(document.getElementById('outH').value) || 1;
+            if (outW <= 0) outW = 1;
+            if (outH <= 0) outH = 1;
+            const r = outW / outH;
+
+            if (dragMode === 'move') {
+                const dx = px - dragStart.x;
+                const dy = py - dragStart.y;
+                crop.x = clamp(origCrop.x + dx, 0, canvas.width - origCrop.w);
+                crop.y = clamp(origCrop.y + dy, 0, canvas.height - origCrop.h);
+            } else {
+                let ax, ay, signX, signY;
+                if (dragMode === 'nw') { ax = origCrop.x + origCrop.w; ay = origCrop.y + origCrop.h; signX = -1; signY = -1; }
+                else if (dragMode === 'ne') { ax = origCrop.x; ay = origCrop.y + origCrop.h; signX = +1; signY = -1; }
+                else if (dragMode === 'sw') { ax = origCrop.x + origCrop.w; ay = origCrop.y; signX = -1; signY = +1; }
+                else { ax = origCrop.x; ay = origCrop.y; signX = +1; signY = +1; }
+
+                const mx = clamp(px, 0, canvas.width);
+                const my = clamp(py, 0, canvas.height);
+
+                const p = { x: signX * (mx - ax), y: signY * (my - ay) };
+                const d = { x: r, y: 1 };
+                const dd = d.x * d.x + d.y * d.y;
+                let s = (p.x * d.x + p.y * d.y) / dd;
+
+                const sMin = Math.max(10, 10 / Math.max(r, Number.EPSILON));
+                const sMaxX = signX > 0 ? (canvas.width - ax) / Math.max(r, Number.EPSILON) : ax / Math.max(r, Number.EPSILON);
+                const sMaxY = signY > 0 ? (canvas.height - ay) : ay;
+                const sMax = Math.max(0, Math.min(sMaxX, sMaxY));
+                s = clamp(s, sMin, Math.max(sMin, sMax));
+
+                const w = Math.round(r * s);
+                const h = Math.round(s);
+                const x0 = signX > 0 ? ax : ax - w;
+                const y0 = signY > 0 ? ay : ay - h;
+
+                crop.x = clamp(Math.round(x0), 0, canvas.width - w);
+                crop.y = clamp(Math.round(y0), 0, canvas.height - h);
+                crop.w = w;
+                crop.h = h;
+            }
+            drawMain();
+        }, { passive: false });
+
+        canvas.addEventListener('pointerup', ev => {
+            if (dragging) {
+                dragging = false;
+                try { canvas.releasePointerCapture(ev.pointerId); } catch (e) { }
+            }
+        }, { passive: false });
+
+        /* ---------- Zielbreite/-höhe Änderungen ---------- */
+        const outWInput = document.getElementById('outW');
+        const outHInput = document.getElementById('outH');
+        let wSpin = false, hSpin = false;
+
+        function commitAspectAuto() {
+            if (!imgLoaded) return;
+            const w = parseInt(outWInput.value), h = parseInt(outHInput.value);
+            if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+                adjustCropToAspect(w, h, 'auto');
+                drawMain();
+            }
+        }
+        outWInput.addEventListener('keydown', (e) => {
+            if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(e.key)) wSpin = true;
+            if (e.key === 'Enter') { e.preventDefault(); commitAspectAuto(); }
+        });
+        outHInput.addEventListener('keydown', (e) => {
+            if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(e.key)) hSpin = true;
+            if (e.key === 'Enter') { e.preventDefault(); commitAspectAuto(); }
+        });
+        outWInput.addEventListener('input', () => {
+            if (!imgLoaded || !wSpin) return;
+            const w = parseInt(outWInput.value), h = parseInt(outHInput.value);
+            if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+                adjustCropToAspect(w, h, 'keepH');
+                drawMain();
+            }
+            wSpin = false;
+        });
+        outHInput.addEventListener('input', () => {
+            if (!imgLoaded || !hSpin) return;
+            const w = parseInt(outWInput.value), h = parseInt(outHInput.value);
+            if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+                adjustCropToAspect(w, h, 'keepW');
+                drawMain();
+            }
+            hSpin = false;
+        });
+        ['change', 'blur'].forEach(evt => {
+            outWInput.addEventListener(evt, commitAspectAuto);
+            outHInput.addEventListener(evt, commitAspectAuto);
+        });
+
+        /* ---------- Pipeline: Crop->Scale->Dither ohne große Zwischenpuffer ---------- */
+        function canvasToImageRect(imageObj) {
+            const s = canvas._imgScale || 1;
+            const scaleUp = 1 / s;
+            const sx = clamp(Math.round(crop.x * scaleUp), 0, imageObj.naturalWidth - 1);
+            const sy = clamp(Math.round(crop.y * scaleUp), 0, imageObj.naturalHeight - 1);
+            const sw = clamp(Math.round(crop.w * scaleUp), 1, imageObj.naturalWidth);
+            const sh = clamp(Math.round(crop.h * scaleUp), 1, imageObj.naturalHeight);
+            return { sx, sy, sw, sh };
+        }
+
+        /* ---------- Dithering ---------- */
+        function floydSteinbergDither(imageData, palette) {
+            'use strict';
+            const w = imageData.width, h = imageData.height;
+            const data = imageData.data;
+            if (!imageData || !data || !palette || !palette.length || !w || !h) return imageData;
+
+            const DEVICE_L_MIN = 15, DEVICE_L_MAX = 92, CHROMA_SCALE = 0.65;
+            const tBlack = -1, tWhite = 256;
+
+            const GAMMA_TH = 0.04045;
+            function srgb8ToLinear01(u8) {
+                const c = (u8 | 0) / 255;
+                return c <= GAMMA_TH ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+            }
+
+            const M = [
+                [0.4124564, 0.3575761, 0.1804375],
+                [0.2126729, 0.7151522, 0.0721750],
+                [0.0193339, 0.1191920, 0.9503041]
+            ];
+            function linearRgbToXyz(r, g, b) {
+                const X = M[0][0] * r + M[0][1] * g + M[0][2] * b;
+                const Y = M[1][0] * r + M[1][1] * g + M[1][2] * b;
+                const Z = M[2][0] * r + M[2][1] * g + M[2][2] * b;
+                return [X, Y, Z];
+            }
+
+            const Xn = 0.95047, Yn = 1.00000, Zn = 1.08883;
+            const EPS = 0.008856, KAPPA = 903.3;
+            function f_for_lab(t) { return t > EPS ? Math.pow(t, 1 / 3) : (KAPPA * t + 16) / 116; }
+            function xyzToLab(X, Y, Z) {
+                const fx = f_for_lab(X / Xn);
+                const fy = f_for_lab(Y / Yn);
+                const fz = f_for_lab(Z / Zn);
+                const L = Math.max(0, 116 * fy - 16);
+                const a = 500 * (fx - fy);
+                const b = 200 * (fy - fz);
+                return [L, a, b];
+            }
+            function srgb8ToLab(r8, g8, b8) {
+                const r = srgb8ToLinear01(r8), g = srgb8ToLinear01(g8), b = srgb8ToLinear01(b8);
+                const [X, Y, Z] = linearRgbToXyz(r, g, b);
+                return xyzToLab(X, Y, Z);
+            }
+
+            const palLen = palette.length | 0;
+            const palSRGB = new Uint8Array(palLen * 3);
+            const palLAB = new Float32Array(palLen * 3);
+            let blackIdx = -1, whiteIdx = -1;
+            for (let i = 0; i < palLen; i++) {
+                const r = Math.max(0, Math.min(255, palette[i][0] | 0));
+                const g = Math.max(0, Math.min(255, palette[i][1] | 0));
+                const b = Math.max(0, Math.min(255, palette[i][2] | 0));
+                palSRGB[i * 3 + 0] = r; palSRGB[i * 3 + 1] = g; palSRGB[i * 3 + 2] = b;
+                const lab = srgb8ToLab(r, g, b);
+                palLAB[i * 3 + 0] = DEVICE_L_MIN + (lab[0] / 100) * (DEVICE_L_MAX - DEVICE_L_MIN);
+                palLAB[i * 3 + 1] = lab[1] * CHROMA_SCALE;
+                palLAB[i * 3 + 2] = lab[2] * CHROMA_SCALE;
+                if (r === 0 && g === 0 && b === 0) blackIdx = i;
+                if (r === 255 && g === 255 && b === 255) whiteIdx = i;
+            }
+
+            function clamp255(v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+            function nearestIndexMetric(r, g, b) {
+                if ((tBlack >= 0 && blackIdx !== -1) || (tWhite <= 255 && whiteIdx !== -1)) {
+                    const Yl = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                    if (tBlack >= 0 && blackIdx !== -1 && Yl <= tBlack) return blackIdx;
+                    if (tWhite <= 255 && whiteIdx !== -1 && Yl >= tWhite) return whiteIdx;
+                }
+                const lab = srgb8ToLab(r, g, b);
+                const Lp = DEVICE_L_MIN + (lab[0] / 100) * (DEVICE_L_MAX - DEVICE_L_MIN);
+                const ap = lab[1] * CHROMA_SCALE;
+                const bp = lab[2] * CHROMA_SCALE;
+                let best = 0, bestD = Infinity;
+                for (let i = 0; i < palLen; i++) {
+                    const dL = Lp - palLAB[i * 3 + 0];
+                    const dA = ap - palLAB[i * 3 + 1];
+                    const dB = bp - palLAB[i * 3 + 2];
+                    const d = dL * dL + dA * dA + dB * dB;
+                    if (d < bestD) { bestD = d; best = i; }
+                }
+                return best;
+            }
+
+            const f = new Float32Array(w * h * 3);
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const di = (y * w + x) * 4;
+                    const fi = (y * w + x) * 3;
+                    f[fi + 0] = data[di + 0];
+                    f[fi + 1] = data[di + 1];
+                    f[fi + 2] = data[di + 2];
+                }
+            }
+
+            for (let y = 0; y < h; y++) {
+                const leftToRight = (y % 2) === 0;
+                const xStart = leftToRight ? 0 : w - 1;
+                const xEnd = leftToRight ? w : -1;
+                const xStep = leftToRight ? 1 : -1;
+
+                for (let x = xStart; x !== xEnd; x += xStep) {
+                    const fi = (y * w + x) * 3;
+                    const di = (y * w + x) * 4;
+
+                    const oldR = clamp255(f[fi + 0]);
+                    const oldG = clamp255(f[fi + 1]);
+                    const oldB = clamp255(f[fi + 2]);
+
+                    const idx = nearestIndexMetric(oldR, oldG, oldB);
+                    const nr = palSRGB[idx * 3 + 0], ng = palSRGB[idx * 3 + 1], nb = palSRGB[idx * 3 + 2];
+
+                    const errR = oldR - nr;
+                    const errG = oldG - ng;
+                    const errB = oldB - nb;
+
+                    data[di + 0] = nr;
+                    data[di + 1] = ng;
+                    data[di + 2] = nb;
+                    data[di + 3] = 255;
+
+                    function add(ix, iy, fr) {
+                        if (ix >= 0 && ix < w && iy >= 0 && iy < h) {
+                            const j = (iy * w + ix) * 3;
+                            f[j + 0] = clamp255(f[j + 0] + errR * fr);
+                            f[j + 1] = clamp255(f[j + 1] + errG * fr);
+                            f[j + 2] = clamp255(f[j + 2] + errB * fr);
+                        }
+                    }
+
+                    if (leftToRight) {
+                        add(x + 1, y, 7 / 16);
+                        add(x - 1, y + 1, 3 / 16);
+                        add(x, y + 1, 5 / 16);
+                        add(x + 1, y + 1, 1 / 16);
+                    } else {
+                        add(x - 1, y, 7 / 16);
+                        add(x + 1, y + 1, 3 / 16);
+                        add(x, y + 1, 5 / 16);
+                        add(x - 1, y + 1, 1 / 16);
+                    }
+                }
+            }
+            return imageData;
+        }
+
+        /* ---------- Export ---------- */
+        function exportBMP24(imageData) {
+            const w = imageData.width, h = imageData.height;
+            const rowSize = Math.floor((24 * w + 31) / 32) * 4;
+            const imgSize = rowSize * h;
+            const headerSize = 14 + 40;
+            const buffer = new ArrayBuffer(headerSize + imgSize);
+            const dv = new DataView(buffer);
+            let p = 0;
+            dv.setUint8(p, 0x42); dv.setUint8(p + 1, 0x4D); p += 2;
+            dv.setUint32(p, headerSize + imgSize, true); p += 4;
+            dv.setUint16(p, 0, true); p += 2; dv.setUint16(p, 0, true); p += 2; dv.setUint32(p, headerSize, true); p += 4;
+            dv.setUint32(p, 40, true); p += 4;
+            dv.setInt32(p, w, true); p += 4; dv.setInt32(p, h, true); p += 4;
+            dv.setUint16(p, 1, true); p += 2; dv.setUint16(p, 24, true); p += 2;
+            dv.setUint32(p, 0, true); p += 4;
+            dv.setUint32(p, imgSize, true); p += 4;
+            dv.setInt32(p, 2835, true); p += 4; dv.setInt32(p, 2835, true); p += 4;
+            dv.setUint32(p, 0, true); p += 4; dv.setUint32(p, 0, true); p += 4;
+
+            const pixels = imageData.data;
+            const rowPad = rowSize - w * 3;
+            let offset = headerSize;
+            for (let y = h - 1; y >= 0; y--) {
+                for (let x = 0; x < w; x++) {
+                    const i = (y * w + x) * 4;
+                    const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+                    dv.setUint8(offset++, b); dv.setUint8(offset++, g); dv.setUint8(offset++, r);
+                }
+                for (let k = 0; k < rowPad; k++) dv.setUint8(offset++, 0);
+            }
+            return new Blob([buffer], { type: 'image/bmp' });
+        }
+
+        let lastBMPBlob = null;
+        let lastOutputName = null;
+
+        /* ---------- Process & Download ---------- */
+        document.getElementById('processBtn').addEventListener('click', async () => {
+            if (selectedIndex < 0 || !fileEntries[selectedIndex]) return alert('Bitte zuerst ein Bild auswählen');
+            const file = fileEntries[selectedIndex];
+
+            const tempImg = new Image();
+            const tmpUrl = URL.createObjectURL(file);
+            tempImg.src = tmpUrl;
+            await new Promise(res => tempImg.onload = res);
+
+            const outW = parseInt(document.getElementById('outW').value) || 480;
+            const outH = parseInt(document.getElementById('outH').value) || 800;
+
+            const r = canvasToImageRect(tempImg);
+
+            const sc = document.createElement('canvas');
+            sc.width = outW; sc.height = outH;
+            const sctx = sc.getContext('2d', { willReadFrequently: true });
+            sctx.drawImage(tempImg, r.sx, r.sy, r.sw, r.sh, 0, 0, outW, outH);
+
+            const scaledData = sctx.getImageData(0, 0, outW, outH);
+            sc.width = 0; sc.height = 0;
+            URL.revokeObjectURL(tmpUrl);
+
+            const usedPal = palette.slice(0, palette.length);
+            const dithered = floydSteinbergDither(scaledData, usedPal);
+
+            const preview = document.getElementById('preview');
+            preview.width = outW; preview.height = outH;
+            const pctx = preview.getContext('2d');
+            pctx.putImageData(dithered, 0, 0);
+
+            const blob = exportBMP24(dithered);
+            lastBMPBlob = blob;
+            lastOutputName = deriveOutputName(file.name);
+            document.getElementById('downloadBtn').disabled = false;
+        });
+
+        document.getElementById('downloadBtn').addEventListener('click', () => {
+            if (!lastBMPBlob) return;
+            const url = URL.createObjectURL(lastBMPBlob);
+            const a = document.createElement('a'); a.href = url; a.download = lastOutputName || 'output_dithered.bmp';
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        });
+
+        /* ---------- Warnung vor Verlassen/Neuladen ---------- */
+        function shouldWarnOnUnload() {
+            return (fileEntries && fileEntries.length > 0) || !!lastBMPBlob;
+        }
+        window.addEventListener('beforeunload', (e) => {
+            if (shouldWarnOnUnload()) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+
+        /* ---------- Initialize ---------- */
+        window.addEventListener('load', () => {
+            document.getElementById('fileInput').title = '';
+            refreshPaletteList();
+            drawMain();
+        });
+    </script>
+</body>
+
+</html>
